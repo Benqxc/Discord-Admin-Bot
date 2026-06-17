@@ -1,4 +1,4 @@
-# Telegram Admin Bot для Discord
+# Discord Admin Bot
 
 Современный многофункциональный администраторский бот для Discord с поддержкой slash-команд.
 
@@ -367,7 +367,7 @@ python bot.py
 
 ## 📄 Лицензия
 
-MIT License
+Apache License 2.0 — see [LICENSE](LICENSE)
 
 ## 👨‍💻 Автор
 
