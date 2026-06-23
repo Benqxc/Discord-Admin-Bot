@@ -1,4 +1,15 @@
+<div align="center">
+
 # Discord Admin Bot
+
+**`_ud2`** · [Benqxc](https://github.com/Benqxc)
+
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/Benqxc/Discord-Admin-Bot)
+[![Discord.py](https://img.shields.io/badge/discord.py-2.0+-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discordpy.readthedocs.io/)
+
+</div>
+
+---
 
 Современный многофункциональный администраторский бот для Discord с поддержкой slash-команд.
 
@@ -371,7 +382,7 @@ Apache License 2.0 — see [LICENSE](LICENSE)
 
 ## 👨‍💻 Автор
 
-Powered by Nobame
+**[_ud2](https://github.com/Benqxc)** · [@Benqxc](https://github.com/Benqxc)
 
 ## 🆘 Поддержка
 
