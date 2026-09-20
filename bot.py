@@ -71,8 +71,10 @@ def save_warnings(warnings):
     save_json(WARNINGS_FILE, warnings)
 
 def load_auto_roles():
+    """Автороли хранятся отдельно для каждого сервера: {guild_id: [имена ролей]}.
+    Раньше список был общим, и роли одного сервера выдавались на всех."""
     data = load_json(AUTO_ROLES_FILE)
-    return data if isinstance(data, list) else []
+    return data if isinstance(data, dict) else {}
 
 def save_auto_roles(roles):
     save_json(AUTO_ROLES_FILE, roles)
@@ -257,6 +259,9 @@ class PaginationView(View):
     
     @discord.ui.button(label="❌", style=discord.ButtonStyle.danger)
     async def close_button(self, interaction: discord.Interaction, button: Button):
+        # Интеракцию нужно подтвердить, иначе Discord покажет
+        # «Взаимодействие не удалось»
+        await interaction.response.defer()
         await interaction.message.delete()
         self.stop()
 
@@ -293,18 +298,22 @@ class VerificationView(View):
         
         try:
             await interaction.user.add_roles(verified_role)
-            await interaction.response.send_message('✅ Вы успешно верифицированы!', ephemeral=True)
-            
-            # Лог
-            embed = discord.Embed(
-                title='✅ Новая верификация',
-                description=f'{interaction.user.mention} прошел верификацию',
-                color=discord.Color.green(),
-                timestamp=datetime.datetime.now()
-            )
-            await send_log(interaction.guild, 'member_log', embed)
-        except:
+        except discord.HTTPException:
             await interaction.response.send_message('❌ Ошибка при выдаче роли.', ephemeral=True)
+            return
+        
+        # Отвечаем и логируем только после успешной выдачи роли:
+        # раньше ошибка в send_log приводила к повторному ответу
+        # на уже отвеченную интеракцию (InteractionResponded)
+        await interaction.response.send_message('✅ Вы успешно верифицированы!', ephemeral=True)
+        
+        embed = discord.Embed(
+            title='✅ Новая верификация',
+            description=f'{interaction.user.mention} прошел верификацию',
+            color=discord.Color.green(),
+            timestamp=datetime.datetime.now()
+        )
+        await send_log(interaction.guild, 'member_log', embed)
 
 
 # ==================== Reaction Roles ====================
@@ -378,6 +387,10 @@ class TicketCategorySelect(Select):
             "other": "Другое"
         }
         
+        # Отвечаем сразу: создание канала может занять больше 3 секунд,
+        # после которых интеракция протухает ("Unknown interaction")
+        await interaction.response.defer(ephemeral=True)
+        
         tickets = load_tickets()
         guild_id = str(interaction.guild.id)
         user_id = str(interaction.user.id)
@@ -388,7 +401,7 @@ class TicketCategorySelect(Select):
                 if ticket_data['user_id'] == user_id and ticket_data['status'] == 'open':
                     channel = interaction.guild.get_channel(int(ticket_data['channel_id']))
                     if channel:
-                        await interaction.response.send_message(
+                        await interaction.followup.send(
                             f'❌ У вас уже есть открытый тикет: {channel.mention}',
                             ephemeral=True
                         )
@@ -460,18 +473,18 @@ class TicketCategorySelect(Select):
             view = TicketControlView()
             await channel.send(embed=embed, view=view)
             
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f'✅ Тикет создан: {channel.mention}',
                 ephemeral=True
             )
             
         except discord.Forbidden:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 '❌ У бота нет прав для создания каналов.',
                 ephemeral=True
             )
         except Exception as e:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f'❌ Ошибка при создании тикета: {e}',
                 ephemeral=True
             )
@@ -682,6 +695,7 @@ async def check_reminders():
     for reminder_id, reminder_data in reminders.items():
         remind_time = datetime.datetime.fromisoformat(reminder_data['time'])
         if current_time >= remind_time:
+            delivered = False
             guild = bot.get_guild(int(reminder_data['guild_id']))
             if guild:
                 channel = guild.get_channel(int(reminder_data['channel_id']))
@@ -689,9 +703,14 @@ async def check_reminders():
                 if channel and user:
                     try:
                         await channel.send(f'⏰ {user.mention}, напоминание: {reminder_data["message"]}')
-                    except:
+                        delivered = True
+                    except discord.HTTPException:
                         pass
-            to_remove.append(reminder_id)
+            # Удаляем доставленные напоминания; при временной ошибке
+            # (нет кеша/сети) пробуем ещё раз, но не дольше часа,
+            # чтобы не зациклиться на безнадёжных напоминаниях
+            if delivered or (current_time - remind_time).total_seconds() > 3600:
+                to_remove.append(reminder_id)
     
     for reminder_id in to_remove:
         del reminders[reminder_id]
@@ -711,36 +730,50 @@ async def check_giveaways():
             end_time = datetime.datetime.fromisoformat(giveaway_data['end_time'])
             if current_time >= end_time:
                 guild = bot.get_guild(int(giveaway_data['guild_id']))
-                if guild:
-                    channel = guild.get_channel(int(giveaway_data['channel_id']))
-                    if channel:
-                        try:
-                            message = await channel.fetch_message(int(giveaway_id))
-                            
-                            # Получение участников
-                            participants = giveaway_data.get('participants', [])
-                            
-                            if participants:
-                                winners_count = giveaway_data.get('winners', 1)
-                                winners = random.sample(participants, min(winners_count, len(participants)))
-                                
-                                winner_mentions = ', '.join([f'<@{w}>' for w in winners])
-                                
-                                embed = discord.Embed(
-                                    title='🎉 Розыгрыш завершен!',
-                                    description=f'**Приз:** {giveaway_data["prize"]}\n**Победители:** {winner_mentions}',
-                                    color=discord.Color.gold()
-                                )
-                                
-                                await channel.send(embed=embed)
-                                await message.edit(content='🎉 **РОЗЫГРЫШ ЗАВЕРШЕН**', embed=embed, view=None)
-                            else:
-                                await channel.send('❌ Нет участников розыгрыша.')
-                            
-                            giveaways[giveaway_id]['status'] = 'ended'
-                            save_giveaways(giveaways)
-                        except:
-                            pass
+                channel = guild.get_channel(int(giveaway_data['channel_id'])) if guild else None
+                
+                # Сервер/канал недоступны — завершаем розыгрыш,
+                # иначе цикл будет бесконечно пытаться его обработать
+                if channel is None:
+                    giveaways[giveaway_id]['status'] = 'ended'
+                    save_giveaways(giveaways)
+                    continue
+                
+                try:
+                    message = await channel.fetch_message(int(giveaway_id))
+                except discord.NotFound:
+                    # Сообщение розыгрыша удалено
+                    giveaways[giveaway_id]['status'] = 'ended'
+                    save_giveaways(giveaways)
+                    continue
+                except discord.HTTPException:
+                    continue
+                
+                try:
+                    # Получение участников
+                    participants = giveaway_data.get('participants', [])
+                    
+                    if participants:
+                        winners_count = giveaway_data.get('winners', 1)
+                        winners = random.sample(participants, min(winners_count, len(participants)))
+                        
+                        winner_mentions = ', '.join([f'<@{w}>' for w in winners])
+                        
+                        embed = discord.Embed(
+                            title='🎉 Розыгрыш завершен!',
+                            description=f'**Приз:** {giveaway_data["prize"]}\n**Победители:** {winner_mentions}',
+                            color=discord.Color.gold()
+                        )
+                        
+                        await channel.send(embed=embed)
+                        await message.edit(content='🎉 **РОЗЫГРЫШ ЗАВЕРШЕН**', embed=embed, view=None)
+                    else:
+                        await channel.send('❌ Нет участников розыгрыша.')
+                    
+                    giveaways[giveaway_id]['status'] = 'ended'
+                    save_giveaways(giveaways)
+                except discord.HTTPException:
+                    pass
 
 
 # ==================== События ====================
@@ -755,6 +788,8 @@ async def on_ready():
     bot.add_view(TicketPanelView())
     bot.add_view(TicketControlView())
     bot.add_view(VerificationView())
+    # Без регистрации кнопки розыгрышей переставали работать после рестарта
+    bot.add_view(GiveawayView())
     print('✅ Persistent views зарегистрированы')
     
     # Запуск фоновых задач
@@ -776,16 +811,15 @@ async def on_member_join(member):
     """Обработка входа нового участника"""
     guild_id = str(member.guild.id)
     
-    # Автовыдача ролей
-    auto_roles = load_auto_roles()
-    if auto_roles:
-        for role_name in auto_roles:
-            role = discord.utils.get(member.guild.roles, name=role_name)
-            if role:
-                try:
-                    await member.add_roles(role)
-                except:
-                    pass
+    # Автовыдача ролей (только настроенные для этого сервера)
+    auto_roles = load_auto_roles().get(guild_id, [])
+    for role_name in auto_roles:
+        role = discord.utils.get(member.guild.roles, name=role_name)
+        if role:
+            try:
+                await member.add_roles(role)
+            except discord.HTTPException:
+                pass
     
     # Приветственное сообщение
     welcome_config = load_welcome_config()
@@ -865,42 +899,44 @@ async def on_message(message):
         # Анти-спам
         antispam_config = load_antispam_config()
         if guild_id in antispam_config and antispam_config[guild_id].get('enabled', False):
-            user_id = str(message.author.id)
+            # Ключ включает сервер: раньше сообщения с разных серверов
+            # суммировались и вызывали ложные срабатывания
+            spam_key = f'{guild_id}:{message.author.id}'
             current_time = datetime.datetime.now()
             
             # Добавление сообщения в кэш
-            user_message_cache[user_id].append({
+            user_message_cache[spam_key].append({
                 'content': message.content,
                 'time': current_time
             })
             
             # Очистка старых сообщений (старше 10 секунд)
-            user_message_cache[user_id] = [
-                msg for msg in user_message_cache[user_id]
+            user_message_cache[spam_key] = [
+                msg for msg in user_message_cache[spam_key]
                 if (current_time - msg['time']).total_seconds() < 10
             ]
             
             # Проверка на спам
-            if len(user_message_cache[user_id]) >= 5:
-                user_spam_warnings[user_id] += 1
+            if len(user_message_cache[spam_key]) >= 5:
+                user_spam_warnings[spam_key] += 1
                 
                 try:
                     await message.channel.purge(limit=5, check=lambda m: m.author == message.author)
                     
-                    if user_spam_warnings[user_id] >= 3:
+                    if user_spam_warnings[spam_key] >= 3:
                         # Таймаут на 10 минут
                         try:
                             await message.author.timeout(datetime.timedelta(minutes=10), reason='Спам')
                             await message.channel.send(f'🔇 {message.author.mention} получил таймаут за спам.')
-                            user_spam_warnings[user_id] = 0
-                        except:
+                            user_spam_warnings[spam_key] = 0
+                        except discord.HTTPException:
                             pass
                     else:
-                        await message.channel.send(f'⚠️ {message.author.mention}, не спамьте! Предупреждение {user_spam_warnings[user_id]}/3')
-                except:
+                        await message.channel.send(f'⚠️ {message.author.mention}, не спамьте! Предупреждение {user_spam_warnings[spam_key]}/3')
+                except discord.HTTPException:
                     pass
                 
-                user_message_cache[user_id].clear()
+                user_message_cache[spam_key].clear()
                 return
         
         # Система уровней
@@ -947,7 +983,7 @@ async def on_message(message):
 @bot.event
 async def on_raw_reaction_add(payload):
     """Обработка добавления реакций для Reaction Roles"""
-    if payload.member.bot:
+    if payload.guild_id is None:
         return
     
     reaction_roles = load_reaction_roles()
@@ -961,10 +997,17 @@ async def on_raw_reaction_add(payload):
             guild = bot.get_guild(payload.guild_id)
             if guild:
                 role = guild.get_role(int(role_id))
-                if role:
+                # payload.member может быть None для некешированных участников
+                member = payload.member or guild.get_member(payload.user_id)
+                if member is None:
                     try:
-                        await payload.member.add_roles(role)
-                    except:
+                        member = await guild.fetch_member(payload.user_id)
+                    except discord.HTTPException:
+                        return
+                if role and member and not member.bot:
+                    try:
+                        await member.add_roles(role)
+                    except discord.HTTPException:
                         pass
 
 
@@ -1177,23 +1220,28 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
         await interaction.response.send_message('❌ У вас нет прав модератора.', ephemeral=True)
         return
 
+    # Предупреждения хранятся отдельно для каждого сервера:
+    # раньше они были общими, и варны с одного сервера приводили
+    # к авто-бану на другом
     warnings = load_warnings()
+    guild_id = str(interaction.guild.id)
     user_id = str(member.id)
 
-    if user_id not in warnings:
-        warnings[user_id] = []
+    if guild_id not in warnings:
+        warnings[guild_id] = {}
+    if user_id not in warnings[guild_id]:
+        warnings[guild_id][user_id] = []
 
-    warnings[user_id].append({
+    warnings[guild_id][user_id].append({
         'reason': reason,
         'date': datetime.datetime.now().isoformat(),
         'moderator': str(interaction.user),
-        'moderator_id': interaction.user.id,
-        'guild_id': interaction.guild.id
+        'moderator_id': interaction.user.id
     })
 
     save_warnings(warnings)
     
-    warn_count = len(warnings[user_id])
+    warn_count = len(warnings[guild_id][user_id])
     
     embed = discord.Embed(
         title='⚠️ Предупреждение',
@@ -1235,17 +1283,19 @@ async def unwarn(interaction: discord.Interaction, member: discord.Member, warni
         return
 
     warnings = load_warnings()
+    guild_id = str(interaction.guild.id)
     user_id = str(member.id)
+    user_warnings = warnings.get(guild_id, {}).get(user_id, [])
 
-    if user_id not in warnings or not warnings[user_id]:
+    if not user_warnings:
         await interaction.response.send_message(f'❌ У пользователя {member.mention} нет предупреждений.', ephemeral=True)
         return
     
-    if warning_number < 1 or warning_number > len(warnings[user_id]):
-        await interaction.response.send_message(f'❌ Неверный номер предупреждения. Доступно: 1-{len(warnings[user_id])}', ephemeral=True)
+    if warning_number < 1 or warning_number > len(user_warnings):
+        await interaction.response.send_message(f'❌ Неверный номер предупреждения. Доступно: 1-{len(user_warnings)}', ephemeral=True)
         return
     
-    removed_warn = warnings[user_id].pop(warning_number - 1)
+    removed_warn = user_warnings.pop(warning_number - 1)
     save_warnings(warnings)
     
     await interaction.response.send_message(
@@ -1258,9 +1308,11 @@ async def unwarn(interaction: discord.Interaction, member: discord.Member, warni
 async def warnings_list(interaction: discord.Interaction, member: discord.Member):
     """Показывает список предупреждений пользователя"""
     warnings = load_warnings()
+    guild_id = str(interaction.guild.id)
     user_id = str(member.id)
+    user_warnings = warnings.get(guild_id, {}).get(user_id, [])
 
-    if user_id not in warnings or not warnings[user_id]:
+    if not user_warnings:
         await interaction.response.send_message(f'✅ У пользователя {member.mention} нет предупреждений.', ephemeral=True)
         return
 
@@ -1269,7 +1321,7 @@ async def warnings_list(interaction: discord.Interaction, member: discord.Member
         color=discord.Color.orange()
     )
     
-    for i, warn_data in enumerate(warnings[user_id], 1):
+    for i, warn_data in enumerate(user_warnings, 1):
         date = warn_data['date'][:10]
         embed.add_field(
             name=f'#{i} | {date}',
@@ -1495,12 +1547,14 @@ async def autorole_add(interaction: discord.Interaction, role: discord.Role):
         return
     
     auto_roles = load_auto_roles()
+    guild_id = str(interaction.guild.id)
+    guild_roles = auto_roles.setdefault(guild_id, [])
     
-    if role.name in auto_roles:
+    if role.name in guild_roles:
         await interaction.response.send_message(f'❌ Роль {role.mention} уже в списке автовыдачи.', ephemeral=True)
         return
     
-    auto_roles.append(role.name)
+    guild_roles.append(role.name)
     save_auto_roles(auto_roles)
     await interaction.response.send_message(f'✅ Роль {role.mention} добавлена в список автовыдачи.')
 
@@ -1514,12 +1568,14 @@ async def autorole_remove(interaction: discord.Interaction, role: discord.Role):
         return
     
     auto_roles = load_auto_roles()
+    guild_id = str(interaction.guild.id)
+    guild_roles = auto_roles.get(guild_id, [])
     
-    if role.name not in auto_roles:
+    if role.name not in guild_roles:
         await interaction.response.send_message(f'❌ Роль {role.mention} не найдена в списке автовыдачи.', ephemeral=True)
         return
     
-    auto_roles.remove(role.name)
+    guild_roles.remove(role.name)
     save_auto_roles(auto_roles)
     await interaction.response.send_message(f'✅ Роль {role.mention} удалена из списка автовыдачи.')
 
@@ -1527,7 +1583,7 @@ async def autorole_remove(interaction: discord.Interaction, role: discord.Role):
 @bot.tree.command(name="autorole_list", description="Показать список ролей для автовыдачи")
 async def autorole_list(interaction: discord.Interaction):
     """Показывает список ролей для автоматической выдачи"""
-    auto_roles = load_auto_roles()
+    auto_roles = load_auto_roles().get(str(interaction.guild.id), [])
     
     if not auto_roles:
         await interaction.response.send_message('📋 Список автовыдачи ролей пуст.', ephemeral=True)
@@ -1579,11 +1635,15 @@ async def filter_remove(interaction: discord.Interaction, word: str):
     word_filter = load_word_filter()
     guild_id = str(interaction.guild.id)
     
-    if guild_id not in word_filter or word not in word_filter[guild_id]['words']:
+    # Ищем без учёта регистра — так же, как при добавлении
+    words = word_filter.get(guild_id, {}).get('words', [])
+    stored_word = next((w for w in words if w.lower() == word.lower()), None)
+    
+    if stored_word is None:
         await interaction.response.send_message(f'❌ Слово "{word}" не найдено в фильтре.', ephemeral=True)
         return
     
-    word_filter[guild_id]['words'].remove(word)
+    words.remove(stored_word)
     save_word_filter(word_filter)
     
     await interaction.response.send_message(f'✅ Слово "{word}" удалено из фильтра.')
@@ -1890,6 +1950,10 @@ async def setup_tickets(
     )
     embed.set_footer(text='Powered by Nobame')
     
+    # Подтверждаем интеракцию до отправки панели, чтобы не превысить
+    # 3-секундное окно ответа
+    await interaction.response.defer(ephemeral=True)
+    
     try:
         view = TicketPanelView()
         await channel.send(embed=embed, view=view)
@@ -1900,12 +1964,14 @@ async def setup_tickets(
         if support_role:
             response_text += f'\n👥 Роль поддержки: {support_role.mention}'
         
-        await interaction.response.send_message(response_text, ephemeral=True)
+        await interaction.followup.send(response_text, ephemeral=True)
     except discord.Forbidden:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f'❌ У бота нет прав для отправки сообщений в {channel.mention}',
             ephemeral=True
         )
+    except discord.HTTPException as e:
+        await interaction.followup.send(f'❌ Ошибка при создании панели: {e}', ephemeral=True)
 
 
 @bot.tree.command(name="ticket_config", description="Настроить систему тикетов")
@@ -2107,20 +2173,24 @@ async def customcmd_list(interaction: discord.Interaction):
 # ==================== Команды розыгрышей ====================
 
 class GiveawayView(View):
-    """View для участия в розыгрыше"""
-    def __init__(self, giveaway_id):
+    """View для участия в розыгрыше (persistent)"""
+    def __init__(self):
         super().__init__(timeout=None)
-        self.giveaway_id = giveaway_id
     
     @discord.ui.button(label="Участвовать", style=discord.ButtonStyle.green, emoji="🎉", custom_id="giveaway_join")
     async def join_button(self, interaction: discord.Interaction, button: Button):
         giveaways = load_giveaways()
         
-        if self.giveaway_id not in giveaways:
+        # Розыгрыш ищем по ID сообщения, на котором нажата кнопка:
+        # раньше использовался id, переданный в конструктор ('temp'),
+        # из-за чего участие никогда не засчитывалось
+        giveaway_id = str(interaction.message.id)
+        
+        if giveaway_id not in giveaways:
             await interaction.response.send_message('❌ Розыгрыш не найден.', ephemeral=True)
             return
         
-        giveaway = giveaways[self.giveaway_id]
+        giveaway = giveaways[giveaway_id]
         
         if giveaway['status'] != 'active':
             await interaction.response.send_message('❌ Розыгрыш завершен.', ephemeral=True)
@@ -2171,7 +2241,7 @@ async def giveaway_start(interaction: discord.Interaction, duration: str, winner
     )
     embed.set_footer(text=f'Организатор: {interaction.user.name}')
     
-    view = GiveawayView('temp')
+    view = GiveawayView()
     await interaction.response.send_message(embed=embed, view=view)
     message = await interaction.original_response()
     
@@ -2408,10 +2478,19 @@ async def verification_setup(interaction: discord.Interaction, channel: discord.
         color=discord.Color.green()
     )
     
-    view = VerificationView()
-    await channel.send(embed=embed, view=view)
+    await interaction.response.defer(ephemeral=True)
     
-    await interaction.response.send_message(
+    try:
+        view = VerificationView()
+        await channel.send(embed=embed, view=view)
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f'❌ У бота нет прав для отправки сообщений в {channel.mention}',
+            ephemeral=True
+        )
+        return
+    
+    await interaction.followup.send(
         f'✅ Система верификации настроена!\n**Канал:** {channel.mention}\n**Роль:** {verified_role.mention}',
         ephemeral=True
     )
@@ -2427,10 +2506,9 @@ async def antispam_toggle(interaction: discord.Interaction):
     config = load_antispam_config()
     guild_id = str(interaction.guild.id)
     
-    if guild_id not in config:
-        config[guild_id] = {'enabled': True}
-    else:
-        config[guild_id]['enabled'] = not config[guild_id].get('enabled', False)
+    # Всегда переключаем состояние (по умолчанию анти-спам выключен)
+    config.setdefault(guild_id, {'enabled': False})
+    config[guild_id]['enabled'] = not config[guild_id].get('enabled', False)
     
     save_antispam_config(config)
     
@@ -2459,11 +2537,12 @@ async def say(interaction: discord.Interaction, message: str):
 )
 async def msg(interaction: discord.Interaction, member: discord.Member, message: str):
     """Отправляет личное сообщение пользователю"""
+    await interaction.response.defer(ephemeral=True)
     try:
         await member.send(f'📨 Сообщение от {interaction.user.mention}:\n{message}')
-        await interaction.response.send_message(f'✅ Сообщение отправлено пользователю {member.mention}', ephemeral=True)
-    except discord.Forbidden:
-        await interaction.response.send_message(f'❌ Не удалось отправить сообщение {member.mention}. Возможно, у пользователя закрыты ЛС.', ephemeral=True)
+        await interaction.followup.send(f'✅ Сообщение отправлено пользователю {member.mention}', ephemeral=True)
+    except discord.HTTPException:
+        await interaction.followup.send(f'❌ Не удалось отправить сообщение {member.mention}. Возможно, у пользователя закрыты ЛС.', ephemeral=True)
 
 
 @bot.tree.command(name="me", description="Выделяет текст курсивом")
