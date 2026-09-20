@@ -6,12 +6,25 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/Benqxc/Discord-Admin-Bot)
 [![Discord.py](https://img.shields.io/badge/discord.py-2.0+-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discordpy.readthedocs.io/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square)](LICENSE)
 
 </div>
 
 ---
 
 Современный многофункциональный администраторский бот для Discord с поддержкой slash-команд.
+
+## Содержание
+
+- [Основные возможности](#-основные-возможности)
+- [Команды](#-команды)
+- [Установка и запуск](#️-установка-и-запуск)
+- [Файлы данных](#-файлы-данных)
+- [Настройка после запуска](#-настройка-после-запуска)
+- [Решение проблем](#-решение-проблем)
+- [Безопасность](#-безопасность)
+- [Зависимости](#-зависимости)
+- [Лицензия](#-лицензия)
 
 ## 🚀 Основные возможности
 
@@ -233,7 +246,11 @@ https://discord.com/api/oauth2/authorize?client_id=ВАШ_CLIENT_ID&permissions=
 python bot.py
 ```
 
+> ⚠️ Зависимости сейчас не зафиксированы ( без верхней границы — на discord.py 3.x может сломаться). Рекомендуется зафиксировать рабочие версии, например .
+
 ## 📝 Файлы данных
+
+> JSON-файлы в репозитории — пустые шаблоны (). Свои данные бот допишет при работе. Не коммитьте файлы с реальными данными серверов.
 
 Бот автоматически создает следующие JSON файлы для хранения данных:
 
